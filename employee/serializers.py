@@ -20,49 +20,86 @@ def get_employee_by_employee_number(normalized: str) -> Employee | None:
     )
 
 
-class LoginStep1Serializer(serializers.Serializer):
-    employee_number = serializers.CharField()
-    password = serializers.CharField(write_only=True)
+LOGIN_IDENTIFIER_FIELDS = (
+    "employee_number",
+    "employeeNumber",
+    "employee_id",
+    "employeeId",
+    "username",
+)
 
-    def validate_employee_number(self, value):
-        normalized = normalize_employee_number(value)
-        if not EMPLOYEE_ID_RE.fullmatch(normalized):
+
+def coerce_login_request_data(data):
+    """Map common web/client field names onto `employee_number`."""
+    if not hasattr(data, "items"):
+        return data
+    payload = {key: data[key] for key in data}
+    if payload.get("employee_number"):
+        return payload
+    for key in LOGIN_IDENTIFIER_FIELDS:
+        if key == "employee_number":
+            continue
+        value = payload.get(key)
+        if value not in (None, ""):
+            payload["employee_number"] = value
+            break
+    return payload
+
+
+def resolve_employee_for_login(identifier: str) -> Employee | None:
+    """
+    Resolve login by employee ID (EL + 3 digits) or by username.
+    Web clients often send username in `employee_number`.
+    """
+    ident = (identifier or "").strip()
+    if not ident:
+        return None
+    normalized = normalize_employee_number(ident)
+    if EMPLOYEE_ID_RE.fullmatch(normalized):
+        return get_employee_by_employee_number(normalized)
+    return Employee.objects.filter(username__iexact=ident).first()
+
+
+class LoginIdentifierSerializer(serializers.Serializer):
+    employee_number = serializers.CharField(required=False, allow_blank=True)
+
+    def to_internal_value(self, data):
+        return super().to_internal_value(coerce_login_request_data(data))
+
+    def resolve_login_employee(self, attrs):
+        raw = (attrs.get("employee_number") or "").strip()
+        if not raw:
             raise serializers.ValidationError(
-                'Employee number must be in the format "EL" followed by exactly '
-                "three digits (e.g. EL000, EL001)."
+                {"employee_number": ["This field is required."]}
             )
-        return normalized
-
-    def validate(self, attrs):
-        employee = get_employee_by_employee_number(attrs["employee_number"])
+        employee = resolve_employee_for_login(raw)
         if employee is None:
             raise serializers.ValidationError(
                 {"employee_number": ["User does not exist."]}
             )
         if not employee.is_active:
             raise serializers.ValidationError("User account is disabled.")
-        if not employee.check_password(attrs["password"]):
-            raise serializers.ValidationError({"password": ["Invalid password."]})
-        if not employee.email:
-            raise serializers.ValidationError(
-                "No email is registered for this employee. Contact HR."
-            )
         attrs["employee"] = employee
+        attrs["employee_number"] = employee.employee_id or raw
         return attrs
 
 
-class LoginStep2Serializer(serializers.Serializer):
-    employee_number = serializers.CharField()
-    otp = serializers.CharField(min_length=6, max_length=6)
+class LoginStep1Serializer(LoginIdentifierSerializer):
+    password = serializers.CharField(write_only=True)
 
-    def validate_employee_number(self, value):
-        normalized = normalize_employee_number(value)
-        if not EMPLOYEE_ID_RE.fullmatch(normalized):
+    def validate(self, attrs):
+        attrs = self.resolve_login_employee(attrs)
+        if not attrs["employee"].check_password(attrs["password"]):
+            raise serializers.ValidationError({"password": ["Invalid password."]})
+        if not attrs["employee"].email:
             raise serializers.ValidationError(
-                'Employee number must be in the format "EL" followed by exactly '
-                "three digits (e.g. EL000, EL001)."
+                "No email is registered for this employee. Contact HR."
             )
-        return normalized
+        return attrs
+
+
+class LoginStep2Serializer(LoginIdentifierSerializer):
+    otp = serializers.CharField(min_length=6, max_length=6)
 
     def validate_otp(self, value):
         if not value.isdigit():
@@ -70,15 +107,7 @@ class LoginStep2Serializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
-        employee = get_employee_by_employee_number(attrs["employee_number"])
-        if employee is None:
-            raise serializers.ValidationError(
-                {"employee_number": ["User does not exist."]}
-            )
-        if not employee.is_active:
-            raise serializers.ValidationError("User account is disabled.")
-        attrs["employee"] = employee
-        return attrs
+        return self.resolve_login_employee(attrs)
 
 
 class EmployeeSummarySerializer(serializers.ModelSerializer):
@@ -154,6 +183,54 @@ class EmployeePatchSerializer(serializers.ModelSerializer):
     class Meta:
         model = Employee
         fields = ("role", "department", "phone")
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        instance = self.instance
+        if instance is None or not instance.pk:
+            return attrs
+        new_department = attrs.get("department", instance.department)
+        for department in instance.headed_departments.all():
+            if new_department is None or new_department.pk != department.pk:
+                raise serializers.ValidationError(
+                    {
+                        "department": (
+                            f'Cannot belong to a different department while serving '
+                            f'as head of "{department.name}".'
+                        )
+                    }
+                )
+        return attrs
+
+
+class ForgotPasswordSendOTPSerializer(LoginIdentifierSerializer):
+    def validate(self, attrs):
+        attrs = self.resolve_login_employee(attrs)
+        if not attrs["employee"].email:
+            raise serializers.ValidationError(
+                "No email is registered for this employee. Contact HR."
+            )
+        return attrs
+
+
+class ForgotPasswordVerifyOTPSerializer(LoginIdentifierSerializer):
+    otp = serializers.CharField(min_length=6, max_length=6)
+
+    def validate_otp(self, value):
+        if not value.isdigit():
+            raise serializers.ValidationError("OTP must be a 6-digit number.")
+        return value
+
+    def validate(self, attrs):
+        return self.resolve_login_employee(attrs)
+
+
+class ForgotPasswordSetPasswordSerializer(LoginIdentifierSerializer):
+    otp = serializers.CharField(min_length=6, max_length=6)
+    new_password = serializers.CharField(min_length=8, write_only=True)
+
+    def validate(self, attrs):
+        return self.resolve_login_employee(attrs)
 
 
 class DepartmentSerializer(serializers.ModelSerializer):

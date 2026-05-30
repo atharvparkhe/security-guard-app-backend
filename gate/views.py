@@ -31,6 +31,8 @@ from gate.services.inward_list import (
     build_inward_list_stats,
     serialize_inward_list_results,
 )
+from gate.serializers.inward_actions import InwardDraftCreateSerializer
+from gate.services.inward_flow import process_inward_draft_create
 from gate.services.inward_guard_flow import (
     process_exit,
     process_inward_create,
@@ -59,7 +61,7 @@ def _entry_queryset():
         "invoice__vendor",
         "invoice__po",
         "stores_acknowledgment__acknowledged_by",
-    ).prefetch_related("lifecycle_steps")
+    ).prefetch_related("lifecycle_steps", "material_items")
 
 
 # --- Truck / Driver masters ---
@@ -79,7 +81,10 @@ class TruckListCreateView(BaseAPIView):
         if search:
             qs = qs.filter(registration_number__icontains=search)
         data = TruckListSerializer(qs, many=True, context={"request": request}).data
-        return self.success(data=data, message="Trucks retrieved successfully")
+        return self.success(
+            data=self.paginated_content(request, data),
+            message="Trucks retrieved successfully",
+        )
 
     def post(self, request):
         serializer = TruckCreateSerializer(data=request.data)
@@ -128,7 +133,10 @@ class DriverListCreateView(BaseAPIView):
                 | Q(licence_number__icontains=search)
             )
         data = DriverListSerializer(qs, many=True, context={"request": request}).data
-        return self.success(data=data, message="Drivers retrieved successfully")
+        return self.success(
+            data=self.paginated_content(request, data),
+            message="Drivers retrieved successfully",
+        )
 
     def post(self, request):
         serializer = DriverCreateSerializer(data=request.data)
@@ -187,11 +195,15 @@ class InwardListCreateView(BaseAPIView):
 
         stats = build_inward_list_stats(qs, request.user)
         results = serialize_inward_list_results(qs, request, request.user)
+        content = self.paginated_content(
+            request, results, filters=filter_meta, stats=stats
+        )
         return self.success(
             data={
-                "filters": filter_meta,
-                "stats": stats,
-                "entries": results,
+                "filters": content["filters"],
+                "stats": content["stats"],
+                "pagination": content["pagination"],
+                "entries": content["results"],
             },
             message="Inward entries retrieved successfully",
         )
@@ -200,25 +212,41 @@ class InwardListCreateView(BaseAPIView):
         merged = request.data.copy()
         merged.update(request.FILES)
 
-        serializer = InwardCreateSerializer(data=merged)
-        serializer.is_valid(raise_exception=True)
-        data = dict(serializer.validated_data)
+        # Legacy one-shot create when invoice_image is supplied
+        if merged.get("invoice_image") or merged.get("invoice_file"):
+            serializer = InwardCreateSerializer(data=merged)
+            serializer.is_valid(raise_exception=True)
+            data = dict(serializer.validated_data)
+            try:
+                entry, gt, is_new_truck, is_new_driver = process_inward_create(
+                    request.user, data, request.FILES
+                )
+            except ValueError as e:
+                return self.error(message=str(e), status=400)
+            detail = serialize_inward_detail(
+                _entry_queryset().get(pk=entry.pk), request
+            )
+            detail["is_new_truck"] = is_new_truck
+            detail["is_new_driver"] = is_new_driver
+            return self.success(
+                data=detail,
+                message="Inward entry created successfully",
+                status=201,
+            )
 
+        serializer = InwardDraftCreateSerializer(data=merged)
+        serializer.is_valid(raise_exception=True)
         try:
-            entry, gt, is_new_truck, is_new_driver = process_inward_create(
-                request.user, data, request.FILES
+            entry = process_inward_draft_create(
+                request.user, serializer.validated_data, request.FILES
             )
         except ValueError as e:
             return self.error(message=str(e), status=400)
-
-        detail = serialize_inward_detail(
-            _entry_queryset().get(pk=entry.pk), request
-        )
-        detail["is_new_truck"] = is_new_truck
-        detail["is_new_driver"] = is_new_driver
         return self.success(
-            data=detail,
-            message="Inward entry created successfully",
+            data=serialize_inward_detail(
+                _entry_queryset().get(pk=entry.pk), request
+            ),
+            message="Inward draft created successfully",
             status=201,
         )
 
@@ -307,7 +335,7 @@ class InwardDecisionView(BaseAPIView):
 
         message = (
             "Entry acknowledged successfully"
-            if entry.status == InwardEntry.STATUS_ACKNOWLEDGED
+            if entry.status == InwardEntry.STATUS_GRN_GENERATED
             else "Stores acknowledgment recorded"
         )
         return self.success(
@@ -425,7 +453,7 @@ class InwardCurrentlyInsideView(BaseAPIView):
                 }
             )
         return self.success(
-            data=results,
+            data=self.paginated_content(request, results),
             message="Currently inside trucks retrieved successfully",
         )
 
@@ -468,8 +496,13 @@ class InvoiceListView(BaseAPIView):
             qs = qs.filter(po_id=po_id)
 
         results = [serialize_invoice_list_item(inv, request) for inv in qs]
+        content = self.paginated_content(request, results, filters=filter_meta)
         return self.success(
-            data={"filters": filter_meta, "invoices": results},
+            data={
+                "filters": content["filters"],
+                "pagination": content["pagination"],
+                "invoices": content["results"],
+            },
             message="Invoices retrieved successfully",
         )
 

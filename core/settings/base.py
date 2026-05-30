@@ -95,6 +95,7 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ),
     "EXCEPTION_HANDLER": "base.exceptions.custom_exception_handler",
+    "PAGE_SIZE": 10,
 }
 
 SIMPLE_JWT = {

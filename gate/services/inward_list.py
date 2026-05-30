@@ -45,6 +45,8 @@ def build_inward_list_stats_superadmin(qs):
         "pending": qs.filter(
             status=InwardEntry.STATUS_PENDING_VERIFICATION
         ).count(),
+        "grn_generated": qs.filter(status=InwardEntry.STATUS_GRN_GENERATED).count(),
+        "rejected": qs.filter(status=InwardEntry.STATUS_REJECTED).count(),
         "pending_grn": qs.filter(pending_grn_q).count(),
         "no_invoice_hardcopy": qs.filter(no_hardcopy_q).count(),
     }

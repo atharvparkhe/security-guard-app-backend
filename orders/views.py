@@ -1,10 +1,37 @@
 from base.permissions import IsGuardOrStoresManager
 from base.views import BaseAPIView
 from orders.models import PurchaseOrder
+from orders.models import Vendor
 from orders.serializers import (
     PurchaseOrderDetailSerializer,
     PurchaseOrderListSerializer,
+    VendorSerializer,
 )
+
+
+class VendorListCreateView(BaseAPIView):
+    permission_classes = [IsGuardOrStoresManager]
+
+    def get(self, request):
+        qs = Vendor.objects.all().order_by("name")
+        search = request.query_params.get("search")
+        if search:
+            qs = qs.filter(name__icontains=search)
+        data = VendorSerializer(qs, many=True).data
+        return self.success(
+            data=self.paginated_content(request, data),
+            message="Vendors retrieved successfully",
+        )
+
+    def post(self, request):
+        serializer = VendorSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        vendor = serializer.save()
+        return self.success(
+            data=VendorSerializer(vendor).data,
+            message="Vendor created successfully",
+            status=201,
+        )
 
 
 class PurchaseOrderListView(BaseAPIView):
@@ -23,7 +50,7 @@ class PurchaseOrderListView(BaseAPIView):
             qs = qs.filter(status=status)
         data = PurchaseOrderListSerializer(qs, many=True).data
         return self.success(
-            data=data,
+            data=self.paginated_content(request, data),
             message="Purchase orders retrieved successfully",
         )
 

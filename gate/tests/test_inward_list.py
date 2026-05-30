@@ -104,7 +104,8 @@ class InwardListAPITests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         content = response.json()["content"]
         self.assertEqual(len(content["entries"]), 2)
-        entry = content["entries"][0]
+        by_id = {e["id"]: e for e in content["entries"]}
+        entry = by_id[str(entry_a.id)]
         self.assertEqual(
             set(entry.keys()),
             {
@@ -117,8 +118,7 @@ class InwardListAPITests(TestCase):
                 "invoice_hardcopy_received",
             },
         )
-        self.assertEqual(entry["client_name"], entry_a.invoice.supplier_name)
-        self.assertNotIn("id", entry)
+        self.assertEqual(entry["client_name"], "Supplier Co")
 
     def test_superadmin_stats(self):
         _create_inward(self.guard_a, InwardEntry.STATUS_COMPLETED, "ST1")
@@ -136,7 +136,14 @@ class InwardListAPITests(TestCase):
         stats = response.json()["content"]["stats"]
         self.assertEqual(
             set(stats.keys()),
-            {"completed", "pending", "pending_grn", "no_invoice_hardcopy"},
+            {
+                "completed",
+                "pending",
+                "pending_grn",
+                "no_invoice_hardcopy",
+                "grn_generated",
+                "rejected",
+            },
         )
         self.assertGreaterEqual(stats["completed"], 1)
         self.assertGreaterEqual(stats["pending"], 1)

@@ -22,6 +22,7 @@ class EmployeeAdmin(UserAdmin):
 
     list_display = (
         "username",
+        "employee_id",
         "full_name",
         "role",
         "department",

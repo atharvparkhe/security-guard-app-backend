@@ -158,6 +158,8 @@ def _serialize_stores_acknowledgment(ack, request):
         "id": str(ack.id),
         "received_invoice_hardcopy": ack.hardcopy_received,
         "comments": ack.stores_remarks,
+        "rejection_category": ack.rejection_category,
+        "rejection_reason": ack.rejection_reason,
         "grn_number": ack.grn_number,
         "acknowledged_at": ack.acknowledged_at.isoformat(),
         "acknowledged_by": {
@@ -250,6 +252,17 @@ def serialize_inward_detail(entry, request):
             },
         },
         "grn_number": grn_number,
+        "rejection_category": entry.rejection_category,
+        "rejection_reason": entry.rejection_reason,
+        "material_items": [
+            {
+                "id": str(item.id),
+                "description": item.description,
+                "quantity": item.quantity,
+                "unit": item.unit,
+            }
+            for item in entry.material_items.all()
+        ],
         "guard_remarks": entry.guard_remarks,
         "status_logs": logs_data,
         "created_at": entry.created_at.isoformat(),

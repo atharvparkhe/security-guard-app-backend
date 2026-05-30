@@ -1,10 +1,28 @@
 import uuid
 
 from django.contrib.auth.models import AbstractUser
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils.translation import gettext_lazy as _
 
 from base.models import BaseModel
 from employee.validators import validate_employee_id_field
+
+
+def validate_department_head_belongs_to_department(head, department):
+    """Department head must be a member of that department."""
+    if head is None:
+        return
+    if head.department_id is None:
+        raise ValidationError(
+            _("Department head must be assigned to a department."),
+            code="head_missing_department",
+        )
+    if department.pk and head.department_id != department.pk:
+        raise ValidationError(
+            _("Department head must belong to this department."),
+            code="head_wrong_department",
+        )
 
 
 class Department(BaseModel):
@@ -21,6 +39,16 @@ class Department(BaseModel):
 
     class Meta:
         ordering = ["name"]
+
+    def clean(self):
+        super().clean()
+        if self.head_id:
+            validate_department_head_belongs_to_department(self.head, self)
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.head_id:
+            validate_department_head_belongs_to_department(self.head, self)
 
     def __str__(self):
         return self.name
@@ -76,13 +104,24 @@ class Employee(AbstractUser):
     def clean(self):
         super().clean()
         raw = self.employee_id
-        if raw is None:
+        if raw is not None:
+            s = str(raw).strip()
+            if s == "":
+                self.employee_id = None
+            else:
+                self.employee_id = s.upper()
+
+        self._validate_headed_departments()
+
+    def _validate_headed_departments(self):
+        if not self.pk:
             return
-        s = str(raw).strip()
-        if s == "":
-            self.employee_id = None
-            return
-        self.employee_id = s.upper()
+        for department in self.headed_departments.all():
+            validate_department_head_belongs_to_department(self, department)
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        self._validate_headed_departments()
 
     def __str__(self):
         return f"{self.get_full_name()} ({self.username})"

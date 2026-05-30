@@ -2,22 +2,18 @@ from django.contrib import admin, messages
 from django.utils.html import format_html
 
 from gate.models import (
-    CompanyVehicle,
-    CompanyVehicleMovement,
     Driver,
     GateTransaction,
     InwardEntry,
     InwardEntryStatusLog,
     InwardLifecycleStep,
+    InwardMaterialItem,
     Invoice,
-    NonReturnableGatePass,
-    NonReturnableGatePassItem,
     OutwardEntry,
-    ReturnableGatePass,
-    ReturnableGatePassItem,
+    OutwardItem,
+    ReturnableReturn,
     StoresAcknowledgment,
     Truck,
-    VisitorBaggage,
     VisitorEntry,
 )
 from gate.services.inward_lifecycle import LIFECYCLE_STEP_ORDER, sync_lifecycle_from_state
@@ -43,13 +39,26 @@ class DriverAdmin(admin.ModelAdmin):
 
 @admin.register(GateTransaction)
 class GateTransactionAdmin(admin.ModelAdmin):
-    list_display = ("truck", "driver", "transaction_type", "in_time", "out_time")
+    list_display = (
+        "truck",
+        "driver",
+        "transaction_type",
+        "status",
+        "in_time",
+        "out_time",
+    )
+    list_filter = ("transaction_type", "status")
 
 
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
     list_display = ("invoice_number", "supplier_name", "invoice_date", "created_at")
     search_fields = ("invoice_number", "supplier_name")
+
+
+class InwardMaterialItemInline(admin.TabularInline):
+    model = InwardMaterialItem
+    extra = 0
 
 
 @admin.register(StoresAcknowledgment)
@@ -100,7 +109,7 @@ class InwardEntryAdmin(admin.ModelAdmin):
     )
     raw_id_fields = ("gate_transaction", "truck", "driver", "invoice")
     readonly_fields = ("lifecycle_timeline_display",)
-    inlines = [InwardLifecycleStepInline]
+    inlines = [InwardLifecycleStepInline, InwardMaterialItemInline]
     actions = ["resync_lifecycle_steps"]
 
     @admin.display(description="Registration")
@@ -166,52 +175,39 @@ class InwardEntryAdmin(admin.ModelAdmin):
 class InwardLifecycleStepAdmin(admin.ModelAdmin):
     list_display = ("inward_entry", "step_key", "status", "completed_at")
     list_filter = ("step_key", "status")
-    readonly_fields = (
-        "inward_entry",
-        "step_key",
-        "status",
-        "notes",
-        "completed_by",
-        "completed_at",
-        "created_at",
-        "updated_at",
-    )
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        return False
 
 
 @admin.register(InwardEntryStatusLog)
 class InwardEntryStatusLogAdmin(admin.ModelAdmin):
     list_display = ("inward_entry", "from_status", "to_status", "changed_by", "changed_at")
-    readonly_fields = (
-        "inward_entry",
-        "from_status",
-        "to_status",
-        "changed_by",
-        "changed_at",
-        "notes",
+
+
+class OutwardItemInline(admin.TabularInline):
+    model = OutwardItem
+    extra = 0
+
+
+@admin.register(OutwardEntry)
+class OutwardEntryAdmin(admin.ModelAdmin):
+    list_display = ("document_number", "type", "status", "party_name", "created_at")
+    list_filter = ("type", "status")
+    inlines = [OutwardItemInline]
+
+
+@admin.register(ReturnableReturn)
+class ReturnableReturnAdmin(admin.ModelAdmin):
+    list_display = ("original_outward", "condition", "status", "created_at")
+    list_filter = ("status", "condition")
+
+
+@admin.register(VisitorEntry)
+class VisitorEntryAdmin(admin.ModelAdmin):
+    list_display = (
+        "visitor_name",
+        "company",
+        "status",
+        "nda_signed",
+        "in_time",
+        "out_time",
     )
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        return False
-
-
-for model in (
-    OutwardEntry,
-    ReturnableGatePass,
-    ReturnableGatePassItem,
-    NonReturnableGatePass,
-    NonReturnableGatePassItem,
-    VisitorEntry,
-    VisitorBaggage,
-    CompanyVehicle,
-    CompanyVehicleMovement,
-):
-    admin.site.register(model)
+    list_filter = ("status", "nda_signed")

@@ -85,7 +85,7 @@ class DashboardStatsAPITests(TestCase):
         self.assertEqual(content["period"]["mode"], "single_day")
         self.assertIn("kpis", content)
         self.assertGreaterEqual(content["kpis"]["inward_total"], 1)
-        self.assertEqual(len(content["charts"]["inward_by_status"]), 3)
+        self.assertEqual(len(content["charts"]["inward_by_status"]), 6)
         self.assertEqual(len(content["charts"]["inward_by_hour"]), 24)
         self.assertTrue(content["visibility"]["stores"])
 

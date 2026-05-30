@@ -59,6 +59,9 @@ class Driver(BaseModel):
 class GateTransaction(BaseModel):
     TRANSACTION_INWARD = "inward"
     TRANSACTION_OUTWARD = "outward"
+    TRANSACTION_RETURNABLE_RETURN = "returnable_return"
+    TRANSACTION_VISITOR_VEHICLE = "visitor_vehicle"
+    # Legacy values (migrated in 0005)
     TRANSACTION_RETURNABLE = "returnable"
     TRANSACTION_NON_RETURNABLE = "non_returnable"
     TRANSACTION_VISITOR = "visitor"
@@ -67,10 +70,18 @@ class GateTransaction(BaseModel):
     TRANSACTION_TYPE_CHOICES = [
         (TRANSACTION_INWARD, "Inward"),
         (TRANSACTION_OUTWARD, "Outward"),
-        (TRANSACTION_RETURNABLE, "Returnable"),
-        (TRANSACTION_NON_RETURNABLE, "Non Returnable"),
-        (TRANSACTION_VISITOR, "Visitor"),
-        (TRANSACTION_COMPANY_VEHICLE, "Company Vehicle"),
+        (TRANSACTION_RETURNABLE_RETURN, "Returnable Return"),
+        (TRANSACTION_VISITOR_VEHICLE, "Visitor Vehicle"),
+    ]
+
+    STATUS_CREATED = "created"
+    STATUS_INSIDE = "inside"
+    STATUS_EXITED = "exited"
+
+    STATUS_CHOICES = [
+        (STATUS_CREATED, "Created"),
+        (STATUS_INSIDE, "Inside"),
+        (STATUS_EXITED, "Exited"),
     ]
 
     truck = models.ForeignKey(
@@ -92,9 +103,14 @@ class GateTransaction(BaseModel):
     in_time = models.DateTimeField(null=True, blank=True)
     out_time = models.DateTimeField(null=True, blank=True)
     transaction_type = models.CharField(
-        max_length=20,
+        max_length=30,
         choices=TRANSACTION_TYPE_CHOICES,
         default=TRANSACTION_INWARD,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_CREATED,
     )
     guard = models.ForeignKey(
         "employee.Employee",
@@ -155,27 +171,55 @@ class Invoice(BaseModel):
         return self.invoice_number or str(self.id)
 
 
+class InwardMaterialItem(BaseModel):
+    inward_entry = models.ForeignKey(
+        "InwardEntry",
+        on_delete=models.CASCADE,
+        related_name="material_items",
+    )
+    description = models.TextField()
+    quantity = models.CharField(max_length=50)
+    unit = models.CharField(max_length=20, blank=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.description[:50]} ({self.quantity})"
+
+
 class InwardEntry(BaseModel):
+    STATUS_DRAFT = "draft"
+    STATUS_INVOICE_UPLOADED = "invoice_uploaded"
     STATUS_PENDING_VERIFICATION = "pending_verification"
-    STATUS_ACKNOWLEDGED = "acknowledged"
+    STATUS_GRN_GENERATED = "grn_generated"
+    STATUS_REJECTED = "rejected"
     STATUS_COMPLETED = "completed"
+    # Legacy alias kept for migrations/tests referencing old name
+    STATUS_ACKNOWLEDGED = STATUS_GRN_GENERATED
 
     STATUS_CHOICES = [
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_INVOICE_UPLOADED, "Invoice Uploaded"),
         (STATUS_PENDING_VERIFICATION, "Pending Verification"),
-        (STATUS_ACKNOWLEDGED, "Acknowledged"),
+        (STATUS_GRN_GENERATED, "GRN Generated"),
+        (STATUS_REJECTED, "Rejected"),
         (STATUS_COMPLETED, "Completed"),
     ]
 
     VALID_TRANSITIONS = {
-        STATUS_PENDING_VERIFICATION: [STATUS_ACKNOWLEDGED],
-        STATUS_ACKNOWLEDGED: [STATUS_COMPLETED],
+        STATUS_DRAFT: [STATUS_INVOICE_UPLOADED],
+        STATUS_INVOICE_UPLOADED: [STATUS_PENDING_VERIFICATION],
+        STATUS_PENDING_VERIFICATION: [STATUS_GRN_GENERATED, STATUS_REJECTED],
+        STATUS_GRN_GENERATED: [STATUS_COMPLETED],
+        STATUS_REJECTED: [STATUS_COMPLETED],
         STATUS_COMPLETED: [],
     }
 
-    gate_transaction = models.OneToOneField(
+    gate_transaction = models.ForeignKey(
         GateTransaction,
         on_delete=models.PROTECT,
-        related_name="inward_entry",
+        related_name="inward_entries",
     )
     truck = models.ForeignKey(
         Truck,
@@ -195,9 +239,11 @@ class InwardEntry(BaseModel):
     status = models.CharField(
         max_length=30,
         choices=STATUS_CHOICES,
-        default=STATUS_PENDING_VERIFICATION,
+        default=STATUS_DRAFT,
     )
     guard_remarks = models.TextField(blank=True)
+    rejection_category = models.CharField(max_length=50, blank=True)
+    rejection_reason = models.TextField(blank=True)
 
     class Meta:
         ordering = ["-created_at"]
@@ -215,12 +261,11 @@ class InwardEntry(BaseModel):
 
     @property
     def is_exit_locked(self):
-        if self.status != self.STATUS_ACKNOWLEDGED:
-            return True
-        try:
-            return not self.stores_acknowledgment.hardcopy_received
-        except StoresAcknowledgment.DoesNotExist:
-            return True
+        return self.status in (
+            self.STATUS_DRAFT,
+            self.STATUS_INVOICE_UPLOADED,
+            self.STATUS_PENDING_VERIFICATION,
+        )
 
     def transition_status(self, new_status, changed_by, notes=""):
         allowed = self.VALID_TRANSITIONS.get(self.status, [])
@@ -241,6 +286,22 @@ class InwardEntry(BaseModel):
 
 
 class StoresAcknowledgment(BaseModel):
+    REJECTION_DAMAGED = "damaged"
+    REJECTION_WRONG_MATERIAL = "wrong_material"
+    REJECTION_QTY_MISMATCH = "qty_mismatch"
+    REJECTION_QUALITY_FAILURE = "quality_failure"
+    REJECTION_WRONG_PO = "wrong_po"
+    REJECTION_OTHER = "other"
+
+    REJECTION_CATEGORY_CHOICES = [
+        (REJECTION_DAMAGED, "Damaged"),
+        (REJECTION_WRONG_MATERIAL, "Wrong Material"),
+        (REJECTION_QTY_MISMATCH, "Quantity Mismatch"),
+        (REJECTION_QUALITY_FAILURE, "Quality Failure"),
+        (REJECTION_WRONG_PO, "Wrong PO"),
+        (REJECTION_OTHER, "Other"),
+    ]
+
     inward_entry = models.OneToOneField(
         InwardEntry,
         on_delete=models.CASCADE,
@@ -248,6 +309,12 @@ class StoresAcknowledgment(BaseModel):
     )
     hardcopy_received = models.BooleanField(default=False)
     grn_number = models.CharField(max_length=100, blank=True)
+    rejection_category = models.CharField(
+        max_length=30,
+        choices=REJECTION_CATEGORY_CHOICES,
+        blank=True,
+    )
+    rejection_reason = models.TextField(blank=True)
     acknowledged_by = models.ForeignKey(
         "employee.Employee",
         on_delete=models.PROTECT,
@@ -349,38 +416,197 @@ class InwardEntryStatusLog(models.Model):
         return f"{self.from_status} -> {self.to_status}"
 
 
-# Future model stubs
 class OutwardEntry(BaseModel):
-    pass
+    TYPE_STANDARD = "standard"
+    TYPE_RETURNABLE = "returnable"
+    TYPE_NON_RETURNABLE = "non_returnable"
+
+    TYPE_CHOICES = [
+        (TYPE_STANDARD, "Standard"),
+        (TYPE_RETURNABLE, "Returnable"),
+        (TYPE_NON_RETURNABLE, "Non Returnable"),
+    ]
+
+    STATUS_CREATED = "created"
+    STATUS_INSIDE = "inside"
+    STATUS_COMPLETED = "completed"
+    STATUS_PENDING_RETURN = "pending_return"
+    STATUS_RETURNED = "returned"
+    STATUS_PARTIALLY_RETURNED = "partially_returned"
+
+    STATUS_CHOICES = [
+        (STATUS_CREATED, "Created"),
+        (STATUS_INSIDE, "Inside"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_PENDING_RETURN, "Pending Return"),
+        (STATUS_RETURNED, "Returned"),
+        (STATUS_PARTIALLY_RETURNED, "Partially Returned"),
+    ]
+
+    gate_transaction = models.ForeignKey(
+        GateTransaction,
+        on_delete=models.PROTECT,
+        related_name="outward_entries",
+    )
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    document_photo = models.ImageField(upload_to="outward_docs/%Y/%m/%d/")
+    document_number = models.CharField(max_length=100)
+    party_name = models.CharField(max_length=255)
+    expected_return_date = models.DateField(null=True, blank=True)
+    status = models.CharField(
+        max_length=30,
+        choices=STATUS_CHOICES,
+        default=STATUS_CREATED,
+    )
+    guard = models.ForeignKey(
+        "employee.Employee",
+        on_delete=models.PROTECT,
+        related_name="outward_entries",
+    )
+    guard_remarks = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Outward {self.document_number} ({self.type})"
 
 
-class ReturnableGatePass(BaseModel):
-    pass
+class OutwardItem(BaseModel):
+    outward_entry = models.ForeignKey(
+        OutwardEntry,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    description = models.TextField()
+    quantity = models.CharField(max_length=50)
+    unit = models.CharField(max_length=20, blank=True)
+    remarks = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.description[:50]}"
 
 
-class ReturnableGatePassItem(BaseModel):
-    pass
+class ReturnableReturn(BaseModel):
+    CONDITION_GOOD = "good"
+    CONDITION_DAMAGED = "damaged"
+    CONDITION_PARTIAL = "partial"
 
+    CONDITION_CHOICES = [
+        (CONDITION_GOOD, "Good"),
+        (CONDITION_DAMAGED, "Damaged"),
+        (CONDITION_PARTIAL, "Partial"),
+    ]
 
-class NonReturnableGatePass(BaseModel):
-    pass
+    STATUS_CREATED = "created"
+    STATUS_INSIDE = "inside"
+    STATUS_COMPLETED = "completed"
 
+    STATUS_CHOICES = [
+        (STATUS_CREATED, "Created"),
+        (STATUS_INSIDE, "Inside"),
+        (STATUS_COMPLETED, "Completed"),
+    ]
 
-class NonReturnableGatePassItem(BaseModel):
-    pass
+    gate_transaction = models.ForeignKey(
+        GateTransaction,
+        on_delete=models.PROTECT,
+        related_name="returnable_returns",
+    )
+    original_outward = models.ForeignKey(
+        OutwardEntry,
+        on_delete=models.PROTECT,
+        related_name="returns",
+    )
+    condition = models.CharField(max_length=20, choices=CONDITION_CHOICES)
+    quantity_returned = models.CharField(max_length=50)
+    remarks = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_CREATED,
+    )
+    guard = models.ForeignKey(
+        "employee.Employee",
+        on_delete=models.PROTECT,
+        related_name="returnable_returns",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Return for {self.original_outward_id}"
 
 
 class VisitorEntry(BaseModel):
-    pass
+    ID_PROOF_AADHAR = "aadhar"
+    ID_PROOF_PAN = "pan"
+    ID_PROOF_PASSPORT = "passport"
+    ID_PROOF_DRIVING_LICENCE = "driving_licence"
+    ID_PROOF_VOTER_ID = "voter_id"
 
+    ID_PROOF_CHOICES = [
+        (ID_PROOF_AADHAR, "Aadhar"),
+        (ID_PROOF_PAN, "PAN"),
+        (ID_PROOF_PASSPORT, "Passport"),
+        (ID_PROOF_DRIVING_LICENCE, "Driving Licence"),
+        (ID_PROOF_VOTER_ID, "Voter ID"),
+    ]
 
-class VisitorBaggage(BaseModel):
-    pass
+    STATUS_CREATED = "created"
+    STATUS_INSIDE = "inside"
+    STATUS_COMPLETED = "completed"
 
+    STATUS_CHOICES = [
+        (STATUS_CREATED, "Created"),
+        (STATUS_INSIDE, "Inside"),
+        (STATUS_COMPLETED, "Completed"),
+    ]
 
-class CompanyVehicle(BaseModel):
-    pass
+    visitor_name = models.CharField(max_length=200)
+    company = models.CharField(max_length=200, blank=True)
+    phone = models.CharField(max_length=15)
+    id_proof_type = models.CharField(max_length=30, choices=ID_PROOF_CHOICES)
+    id_proof_number = models.CharField(max_length=100)
+    id_proof_photo = models.ImageField(
+        upload_to="visitor_ids/%Y/%m/%d/",
+        null=True,
+        blank=True,
+    )
+    purpose = models.TextField()
+    reference_employee = models.ForeignKey(
+        "employee.Employee",
+        on_delete=models.PROTECT,
+        related_name="hosted_visitors",
+    )
+    vehicle_number = models.CharField(max_length=20, blank=True)
+    items_carrying = models.TextField(blank=True)
+    nda_signed = models.BooleanField(default=False)
+    nda_photo = models.ImageField(
+        upload_to="nda_docs/%Y/%m/%d/",
+        null=True,
+        blank=True,
+    )
+    in_time = models.DateTimeField(null=True, blank=True)
+    out_time = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_CREATED,
+    )
+    guard = models.ForeignKey(
+        "employee.Employee",
+        on_delete=models.PROTECT,
+        related_name="processed_visitors",
+    )
+    remarks = models.TextField(blank=True)
 
+    class Meta:
+        ordering = ["-created_at"]
 
-class CompanyVehicleMovement(BaseModel):
-    pass
+    def __str__(self):
+        return f"{self.visitor_name} ({self.status})"

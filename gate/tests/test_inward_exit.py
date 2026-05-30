@@ -72,7 +72,7 @@ class InwardExitAPITests(TestCase):
         entry = _create_acknowledged_entry(creator)
 
         response = _auth_client(other_guard).post(
-            f"/inward/{entry.id}/exit/",
+            f"/inward/{entry.id}/mark-exit/",
             {"guard_remarks": "Exited by relief guard"},
             format="json",
         )

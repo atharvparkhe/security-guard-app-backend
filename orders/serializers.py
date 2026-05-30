@@ -3,6 +3,20 @@ from rest_framework import serializers
 from orders.models import PurchaseOrder, PurchaseOrderItem, Vendor
 
 
+class VendorSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Vendor
+        fields = (
+            "id",
+            "name",
+            "gstin",
+            "contact_person",
+            "phone",
+            "email",
+            "address",
+        )
+
+
 class PurchaseOrderListSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
 

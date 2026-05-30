@@ -1,10 +1,11 @@
 from datetime import timedelta
 
 from django.db.models import Count, Q
+from django.utils import timezone
 from django.db.models.functions import ExtractHour, TruncDate
 
 from core.settings import configurations
-from gate.models import Driver, InwardEntry, Invoice, Truck
+from gate.models import Driver, InwardEntry, Invoice, OutwardEntry, Truck, VisitorEntry
 from orders.models import PurchaseOrder
 
 RECENT_LIMIT = 10
@@ -39,7 +40,7 @@ def _po_period_qs(start_date, end_date):
     ).select_related("vendor")
 
 
-def _build_kpis(inward_qs, invoice_qs, po_qs):
+def _build_kpis(inward_qs, invoice_qs, po_qs, start_date, end_date):
     inward_agg = inward_qs.aggregate(
         inward_total=Count("id"),
         inward_completed=Count("id", filter=Q(status=InwardEntry.STATUS_COMPLETED)),
@@ -54,9 +55,13 @@ def _build_kpis(inward_qs, invoice_qs, po_qs):
             "id",
             filter=Q(status=InwardEntry.STATUS_PENDING_VERIFICATION),
         ),
-        acknowledged=Count(
+        grn_generated=Count(
             "id",
-            filter=Q(status=InwardEntry.STATUS_ACKNOWLEDGED),
+            filter=Q(status=InwardEntry.STATUS_GRN_GENERATED),
+        ),
+        rejected=Count(
+            "id",
+            filter=Q(status=InwardEntry.STATUS_REJECTED),
         ),
     )
 
@@ -71,7 +76,26 @@ def _build_kpis(inward_qs, invoice_qs, po_qs):
         "vehicles_inside_in_period": inward_agg["vehicles_inside_in_period"] or 0,
         "currently_inside": currently_inside,
         "pending_verification": inward_agg["pending_verification"] or 0,
-        "acknowledged": inward_agg["acknowledged"] or 0,
+        "grn_generated": inward_agg["grn_generated"] or 0,
+        "rejected": inward_agg["rejected"] or 0,
+        "outward_today": OutwardEntry.objects.filter(
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date,
+        ).count(),
+        "pending_returns": OutwardEntry.objects.filter(
+            status=OutwardEntry.STATUS_PENDING_RETURN
+        ).count(),
+        "overdue_returns": OutwardEntry.objects.filter(
+            status=OutwardEntry.STATUS_PENDING_RETURN,
+            expected_return_date__lt=timezone.localdate(),
+        ).count(),
+        "visitors_today": VisitorEntry.objects.filter(
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date,
+        ).count(),
+        "visitors_inside": VisitorEntry.objects.filter(
+            status=VisitorEntry.STATUS_INSIDE
+        ).count(),
         "invoices_count": invoice_qs.count(),
         "purchase_orders_count": po_qs.count(),
         "drivers_total": Driver.objects.filter(is_active=True).count(),
@@ -237,6 +261,15 @@ def _build_recent(inward_qs, invoice_qs, po_qs):
 
 def _build_alerts(kpis):
     alerts = []
+    if kpis.get("overdue_returns", 0) >= 1:
+        count = kpis["overdue_returns"]
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "OVERDUE_RETURNABLES",
+                "message": f"{count} returnable outward entr{'y' if count == 1 else 'ies'} overdue",
+            }
+        )
     if kpis["pending_verification"] >= 1:
         count = kpis["pending_verification"]
         alerts.append(
@@ -266,7 +299,7 @@ def build_dashboard_stats(start_date, end_date, period_meta):
     invoice_qs = _invoice_period_qs(start_date, end_date)
     po_qs = _po_period_qs(start_date, end_date)
 
-    kpis = _build_kpis(inward_qs, invoice_qs, po_qs)
+    kpis = _build_kpis(inward_qs, invoice_qs, po_qs, start_date, end_date)
 
     return {
         "period": period_meta,

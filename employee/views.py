@@ -10,12 +10,22 @@ from base.permissions import IsSuperAdmin
 from base.views import BaseAPIView
 from employee.models import Department, Employee
 from employee.login_otp import generate_otp, send_login_otp_email, store_login_otp, verify_login_otp
+from employee.password_reset_otp import (
+    consume_forgot_password_verified,
+    generate_otp as generate_reset_otp,
+    send_forgot_password_otp_email,
+    store_forgot_password_otp,
+    verify_forgot_password_otp,
+)
 from employee.serializers import (
     DepartmentSerializer,
     EmployeeDetailSerializer,
     EmployeeListSerializer,
     EmployeePatchSerializer,
     EmployeeSummarySerializer,
+    ForgotPasswordSendOTPSerializer,
+    ForgotPasswordSetPasswordSerializer,
+    ForgotPasswordVerifyOTPSerializer,
     LoginStep1Serializer,
     LoginStep2Serializer,
 )
@@ -95,6 +105,52 @@ class TokenRefreshView(BaseAPIView):
         )
 
 
+class ForgotPasswordSendOTPView(BaseAPIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = ForgotPasswordSendOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        employee = serializer.validated_data["employee"]
+        otp = generate_reset_otp()
+        store_forgot_password_otp(employee, otp)
+        emailed = send_forgot_password_otp_email(employee, otp)
+        if emailed:
+            return self.success(message="OTP sent to your registered email address.")
+        return self.success(
+            message=(
+                "Email could not be sent (development). Check server logs for OTP."
+            ),
+        )
+
+
+class ForgotPasswordVerifyOTPView(BaseAPIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = ForgotPasswordVerifyOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        employee = serializer.validated_data["employee"]
+        if not verify_forgot_password_otp(employee, serializer.validated_data["otp"]):
+            return self.error(message="Invalid OTP.")
+        return self.success(message="OTP verified successfully.")
+
+
+class ForgotPasswordSetPasswordView(BaseAPIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = ForgotPasswordSetPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        employee = serializer.validated_data["employee"]
+        otp = serializer.validated_data["otp"]
+        if not consume_forgot_password_verified(employee, otp):
+            return self.error(message="Invalid or expired OTP. Request a new code.")
+        employee.set_password(serializer.validated_data["new_password"])
+        employee.save(update_fields=["password"])
+        return self.success(message="Password updated successfully.")
+
+
 class EmployeeListView(BaseAPIView):
     def get(self, request):
         qs = Employee.objects.filter(is_active=True)
@@ -105,7 +161,10 @@ class EmployeeListView(BaseAPIView):
         if department:
             qs = qs.filter(department_id=department)
         data = EmployeeListSerializer(qs, many=True).data
-        return self.success(data=data, message="Employees retrieved successfully")
+        return self.success(
+            data=self.paginated_content(request, data),
+            message="Employees retrieved successfully",
+        )
 
 
 class EmployeeDetailView(BaseAPIView):
@@ -148,4 +207,7 @@ class DepartmentListView(BaseAPIView):
             )
         )
         data = DepartmentSerializer(qs, many=True).data
-        return self.success(data=data, message="Departments retrieved successfully")
+        return self.success(
+            data=self.paginated_content(request, data),
+            message="Departments retrieved successfully",
+        )
